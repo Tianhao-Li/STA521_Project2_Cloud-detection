@@ -1,0 +1,1413 @@
+---
+title: 'STA521: project 2'
+author: "Tianhao Li"
+date: "2021/10/30"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("cvMaster.R")
+source("dataSplit.R")
+library(tidyverse)
+library(gridExtra)
+library(ggplot2)                     
+library(GGally)
+library(knitr)
+library(RColorBrewer)
+library(caret)
+library(data.table)
+library(pROC)
+```
+
+```{r}
+get_legend<-function(myggplot){
+    tmp <- ggplot_gtable(ggplot_build(myggplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+}
+```
+
+# 1 Data collection and Exploration
+## b
+```{r}
+# data preparation
+col_names = c("y","x","label","NDAI","SD","CORR","DF","CF","BF","AF","AN")
+map_label = function(label) {
+  label[which(label == -1)] = "Not Cloud"
+  label[which(label == 0)] = "Unlabeled"
+  label[which(label == 1)] = "Cloud"
+  return (label)
+}
+img1 = read.table("image_data/imagem1.txt",col.names = col_names)
+img1$label = map_label(img1$label)
+
+img2 = read.table("image_data/imagem2.txt",col.names = col_names)
+img2$label = map_label(img2$label)
+
+img3 = read.table("image_data/imagem3.txt",col.names = col_names)
+img3$label = map_label(img3$label)
+```
+
+```{r}
+# pixels percentage
+img1_count = as.data.frame(table(img1$label)) %>% 
+  mutate(portion = Freq / sum(Freq))
+img2_count = as.data.frame(table(img2$label)) %>% 
+  mutate(portion = Freq / sum(Freq))
+img3_count = as.data.frame(table(img3$label)) %>% 
+  mutate(portion = Freq / sum(Freq))
+img_summary = data.frame(
+  label = c("Not Cloud","Unlabeled","Cloud"),
+  img1 = img1_count$portion,
+  img2 = img2_count$portion,
+  img3 = img3_count$portion,
+  summary = img1_count$Freq + img2_count$Freq + img3_count$Freq
+)
+img_summary %>% mutate(summary_portion = summary/sum(summary))
+```
+
+```{r}
+# well-labeled beautiful map
+p1 = ggplot(data=img1, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = FALSE) + 
+  xlab("") + ylab("Y Coordinate") +
+  scale_fill_manual(values = c("deepskyblue", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(panel.background = element_blank(), plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p2 = ggplot(data=img2, aes(x=x,y=y,fill=label)) +
+  geom_tile(show.legend = FALSE) + 
+  xlab("X Coordinate") + ylab("") +
+  scale_fill_manual(values = c("deepskyblue", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(panel.background = element_blank(), plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p3 = ggplot(data=img3, aes(x=x,y=y,fill=label)) +
+  geom_tile(show.legend = FALSE) + 
+  xlab("") + ylab("") +
+  scale_fill_manual(values = c("deepskyblue", "dodgerblue1", "dodgerblue4"), name="Expert Label") + 
+  theme(panel.background = element_blank(), plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p_legend = ggplot(data=img3, aes(x=x,y=y,fill=label)) +
+  geom_tile(show.legend = TRUE) + 
+  xlab("X Coordinate") + ylab("Y Coordinate") +
+  scale_fill_manual(values = c("deepskyblue", "dodgerblue1", "dodgerblue4"), name="Expert Label") + 
+  theme(legend.position = 'right', plot.margin=grid::unit(c(0,0,0,0), "mm")) 
+
+legend = get_legend(p_legend)
+
+p_grid = grid.arrange(arrangeGrob(p1,p2, p3, ncol=3),legend,
+              ncol=2,
+              widths=c(20, 4))
+```
+
+## 1.c
+```{r}
+# filter out unlabeled data
+combined_data = rbind(img1, img2, img3)
+combined_labeled = combined_data[which(combined_data$label != "Unlabeled"),]
+
+features = combined_labeled[,4:ncol(combined_labeled)]
+knitr::kable(cor(features))
+```
+
+
+```{r fig.height=2, fig.width=3}
+# to simplify the plot, draw pairwise scatter plot on a sample dataset
+set.seed(520)
+index = sample(1:nrow(combined_labeled),10000)
+combined_labeled_sample = combined_labeled[index,]
+combined_labeled_sample$label = as.factor(combined_labeled_sample$label)
+features_pair_sample = ggpairs(combined_labeled_sample, columns = 4:ncol(combined_labeled))
+features_pair_sample
+
+# summary table
+cloud_index = which(combined_labeled$label=="Cloud")
+cloud_summary = as.data.frame(summary(combined_labeled[cloud_index,-c(1:3)]))
+cloud_summary = cloud_summary[,-1]
+ncloud_index = which(combined_labeled$label=="Not Cloud")
+ncloud_summary = as.data.frame(summary(combined_labeled[ncloud_index,-c(1:3)]))
+ncloud_summary = ncloud_summary[,-1]
+feature_summary = cbind(cloud_summary,ncloud_summary)[,-3]
+colnames(feature_summary) = c("Feature","Cloud","Not Cloud")
+write.csv(feature_summary,"feature_summary.csv")
+
+# plot of single features
+par(mfrow=c(2,4))
+boxplot(NDAI~label, data=combined_labeled, xlab = '', ylab = 'NDAI', las=2)
+boxplot(log(SD+1)~label, data=combined_labeled,xlab = '', ylab = 'Log(SD + 1)', las=2)
+boxplot(CORR~label,data=combined_labeled, xlab = '', ylab = 'CORR', las=2)
+boxplot(DF~label, data=combined_labeled,xlab = '', ylab = 'DF', las=2)
+boxplot(CF~label, data=combined_labeled,xlab = '', ylab = 'CF', las=2)
+boxplot(BF~label, data=combined_labeled,xlab = '', ylab = 'BF', las=2)
+boxplot(AF~label, data=combined_labeled,xlab = '', ylab = 'AF', las=2)
+boxplot(AN~label, data=combined_labeled,xlab = '', ylab = 'AN', las=2)
+```
+
+# 2 Preparation
+
+## 2.a Data split
+```{r}
+set.seed(520)
+block_split = block_wise_split(list(img1, img2, img3),valpercentage = 0.2)
+vertical_split = vert_wise_split(list(img1, img2, img3),valpercentage = 0.2)
+```
+
+## 2.b Accuracy of a trivial classifier
+```{r}
+pred_accuracy = function(y_true, y) {
+  return (mean(y_true == y))
+}
+```
+
+```{r}
+library(data.table)
+# Trivial Classifier
+val_block = rbindlist(block_split$val_blocks)
+test_block = rbindlist(block_split$test_blocks)
+vb = pred_accuracy(val_block$label, rep("Not Cloud", nrow(val_block)))
+tb = pred_accuracy(test_block$label, rep("Not Cloud", nrow(test_block)))
+
+val_vert = rbindlist(vertical_split$val_blocks)
+test_vert = rbindlist(vertical_split$test_blocks)
+vv = pred_accuracy(val_vert$label, rep("Not Cloud", nrow(val_vert)))
+tv = pred_accuracy(test_vert$label, rep("Not Cloud", nrow(test_vert)))
+
+data.frame("Dataset" = c("Block Split Validation Accuracy", 
+                 "Block Split Test Accuracy",
+                 "Vertical Split Validation Accuracy",
+                 "Vertical Split Test Accuracy"), 
+                 "Accuracies" = c(vb, tb, vv, tv))
+```
+
+## 2.c First order importance
+```{r}
+library(caret)
+# First Order Importance
+## block split result
+block_train_bind = rbindlist(block_split$train_blocks)
+block_train = block_train_bind[, -c("x", "y", "CF", "DF", "BF", "imgIndicator", "prediction_indicator", 
+                                    "block_prediction_indicator", "vert_prediction_indicator")]
+block_train$SD_log = log(block_train$SD + 1)
+block_acc = list()
+for (name in colnames(block_train)) {
+  if (name == "label") {
+    next
+  }
+  fm = as.formula(paste("label ~ ", name))
+  logistic = train(
+    form = fm,
+    data= block_train,
+    method = "glm",
+    family = "binomial",
+    trControl = trainControl(method="none")
+    )
+  block_val_bind = rbindlist(block_split$val_blocks)
+  block_val = block_val_bind[, -c("x", "y")]
+  block_val$SD_log = log(block_val$SD + 1)
+  pred_validation = predict(logistic, newdata=block_val)
+  block_acc[[paste(name, "Accuracy")]] = pred_accuracy(block_val$label, pred_validation)
+}
+```
+
+```{r}
+a = data.frame(block_acc)
+names(a) = gsub("[.]", " ", names(block_acc))
+a
+```
+
+```{r}
+## vert split result
+vert_train_bind = rbindlist(vertical_split$train_blocks)
+vert_train = vert_train_bind[, -c("x", "y", "CF", "DF", "BF", "imgIndicator", "prediction_indicator", 
+                                    "block_prediction_indicator", "vert_prediction_indicator")]
+vert_train$SD_log = log(vert_train$SD + 1)
+vert_acc = list()
+for (name in colnames(vert_train)) {
+  if (name == "label") {
+    next
+  }
+  fm = as.formula(paste("label ~ ", name))
+  logistic = train(
+    form = fm,
+    data=vert_train,
+    method = "glm",
+    family = "binomial",
+    trControl = trainControl(method="none")
+    )
+  vert_val_bind = rbindlist(block_split$val_blocks)
+  vert_val = block_val_bind[, -c("x", "y")]
+  vert_val$SD_log = log(vert_val$SD + 1)
+  pred_validation = predict(logistic, newdata=vert_val)
+  vert_acc[[paste(name, "Accuracy")]] = pred_accuracy(vert_val$label, pred_validation)
+}
+```
+
+```{r}
+b = data.frame(vert_acc)
+names(b) = gsub("[.]", " ", names(vert_acc))
+
+# combine block result and vert result
+rbind(a,b)
+```
+The boxplots are already shown in section 1c
+
+
+## 2.d CV master
+
+
+
+# 3 Modeling
+
+## 3.a Classification methods and results
+
+First use a function to split data base on the split method given.
+
+```{r}
+set.seed(520)
+
+img1$imgIndicator = 1:nrow(img1)
+max(img1$imgIndicator)
+img2$imgIndicator = (nrow(img1) + 1):(nrow(img1)+nrow(img2))
+min(img2$imgIndicator)
+img3$imgIndicator = (nrow(img1)+nrow(img2) + 1):(nrow(img1)+nrow(img2)+nrow(img3))
+
+block_split = block_wise_split(list(img1, img2, img3))
+block_train = block_split$train_blocks
+block_test = block_split$test_blocks
+block_train_set = data.frame(rbindlist(block_train)[,-c("x", "y")])
+block_test_set = data.frame(rbindlist(block_test)[,-c("x", "y")])
+
+vertical_split = vert_wise_split(list(img1, img2, img3))
+vert_train = vertical_split$train_blocks
+vert_test = vertical_split$test_blocks
+vert_train_set = data.frame(rbindlist(vert_train)[,-c("x", "y")])
+vert_test_set = data.frame(rbindlist(vert_test)[,-c("x", "y")])
+```
+
+Method 1: qda
+cross validation
+```{r}
+qda_block_result = cvMaster(block_train, classifier="qda",  verbose=T)
+acc_qda_block = qda_block_result$loss
+average_train_qda_block = mean(acc_qda_block)
+cat("The average loss across all folds is ",average_train_qda_block ,".\n")
+write.csv(acc_qda_block,'acc_qda_block.csv')
+
+acc_qda_vert = cvMaster(vert_train, classifier="qda",  verbose=T)
+acc_qda_vert = acc_qda_vert$loss
+average_train_qda_vert = mean(acc_qda_vert)
+cat("The average loss across all folds is ", average_train_qda_vert,".\n")
+write.csv(acc_qda_vert,'acc_qda_vert.csv')
+```
+
+Method 2: lda
+cross validation
+```{r}
+lda_block_result = cvMaster(block_train, classifier="lda",  verbose=T)
+acc_lda_block = lda_block_result$loss
+average_train_lda_block = mean(acc_lda_block)
+cat("The average loss across all folds is ",average_train_lda_block ,".\n")
+write.csv(acc_lda_block,'acc_lda_block.csv')
+
+acc_lda_vert = cvMaster(vert_train, classifier="lda",  verbose=T)
+acc_lda_vert = acc_lda_vert$loss
+average_train_lda_vert = mean(acc_lda_vert)
+cat("The average loss across all folds is ", average_train_lda_vert,".\n")
+write.csv(acc_lda_vert,'acc_lda_vert.csv')
+```
+
+
+Method 3: logistic regression
+cross validation
+```{r}
+logi_block_result = cvMaster(block_train, classifier="glmnet", verbose=T, tune_param = c(0,0.0005, seq(0.001,0.01,0.001)))
+acc_logi_block = logi_block_result$loss
+average_train_logi_block = colMeans(acc_logi_block)
+tune_param = c(0,0.0005, seq(0.001,0.01,0.001))
+hyper_logi_block = tune_param[which.max(colMeans(acc_logi_block))]
+lr_bestcv_block = acc_logi_block[,which.max(colMeans(acc_logi_block))]
+write.csv(acc_logi_block,"acc_logi_block.csv")
+
+logi_vert_result = cvMaster(vert_train, classifier="glmnet", verbose=T, tune_param = c(0, 0.0005, seq(0.001,0.01,0.001)))
+acc_logi_vert = logi_vert_result$loss
+average_train_logi_vert = colMeans(acc_logi_vert)
+tune_param = c(0, 0.0005, seq(0.001,0.01,0.001))
+hyper_logi_vert = tune_param[which.max(colMeans(acc_logi_vert))]
+lr_bestcv_vert = acc_logi_vert[,which.max(colMeans(acc_logi_vert))]
+write.csv(acc_logi_vert,"acc_logi_vert.csv")
+```
+
+Method 4: decision tree
+cross validation
+```{r}
+dt_block_result = cvMaster(block_train, classifier="rpart", verbose=T,tune_param = c(0,0.0005, seq(0.001,0.03,0.001)))
+acc_dt_block = dt_block_result$loss
+write.csv(acc_dt_block,"acc_dt_block.csv")
+average_train_dt_block = colMeans(acc_dt_block)
+tune_param = c(0,0.0005, seq(0.001,0.03,0.001))
+hyper_dt_block = tune_param[which.max(colMeans(acc_dt_block))]
+dt_bestcv_block = acc_dt_block[,which.max(colMeans(acc_dt_block))]
+
+dt_vert_result = cvMaster(vert_train, classifier="rpart", verbose=T,tune_param = c(0,0.0005, seq(0.001,0.03,0.001)))
+acc_dt_vert = dt_vert_result$loss
+write.csv(acc_dt_vert,"acc_dt_vert.csv")
+average_train_dt_vert = colMeans(acc_dt_vert)
+tune_param = c(0,0.0005, seq(0.001,0.03,0.001))
+hyper_dt_vert = tune_param[which.max(colMeans(acc_dt_vert))]
+dt_bestcv_vert = acc_dt_vert[,which.max(colMeans(acc_dt_vert))]
+```
+
+Method 5: random forest
+cross validation
+```{r}
+rf_block_result = cvMaster(block_train, classifier="rf", verbose=T, tune_param = seq(1, 8, by=1))
+acc_rf_block = rf_block_result$loss
+write.csv(acc_rf_block,"acc_rf_block.csv")
+average_train_rf_block = colMeans(acc_rf_block)
+tune_param = seq(1, 8, by=1)
+hyper_rf_block = tune_param[which.max(colMeans(acc_rf_block))]
+rf_bestcv_block = acc_rf_block[,which.max(colMeans(acc_rf_block))]
+
+rf_vert_result = cvMaster(vert_train, classifier="rf", verbose=T, tune_param = seq(1, 8, by=1))
+acc_rf_vert = rf_vert_result$loss
+write.csv(acc_rf_vert,"acc_rf_vert.csv")
+average_train_rf_vert = colMeans(acc_rf_vert)
+tune_param = seq(1, 8, by=1)
+hyper_rf_vert = tune_param[which.max(colMeans(acc_rf_vert))]
+rf_bestcv_vert = acc_rf_vert[,which.max(colMeans(acc_rf_vert))]
+```
+
+Here we train model with the best hyper parameter(if exist hyper parameter) for later testing.
+
+```{r}
+block_train_set_temp = block_train_set[,-ncol(block_train_set)]
+vert_train_set_temp = vert_train_set[,-ncol(vert_train_set)]
+
+## qda
+# block
+qda_model_block = train(
+  label ~ .,
+  data = block_train_set_temp,
+  method = "qda",
+  preProcess = c("center", "scale"),
+  trControl = trainControl(method="none")
+)
+
+# vert
+qda_model_vert = train(
+  label ~ .,
+  data = vert_train_set_temp,
+  method = "qda",
+  preProcess = c("center", "scale"),
+  trControl = trainControl(method="none")
+)
+
+## lda
+# block
+lda_model_block = train(
+  label ~ .,
+  data = block_train_set_temp,
+  method = "lda",
+  preProcess = c("center", "scale"),
+  trControl = trainControl(method="none")
+)
+
+# vert
+lda_model_vert = train(
+  label ~ .,
+  data = vert_train_set_temp,
+  method = "lda",
+  preProcess = c("center", "scale"),
+  trControl = trainControl(method="none")
+)
+
+# logistic regression
+# block
+tune_block = data.frame(alpha=1,lambda=hyper_logi_block)
+logi_model_block = train(
+          form = label ~ .,
+          data = block_train_set_temp,
+          method = "glmnet",
+          family = "binomial",
+          preProcess = c("center","scale"),
+          tuneLength = 1,
+          tuneGrid = tune_block,
+          trControl = trainControl(method="none") 
+)
+# vert
+tune_vert = data.frame(alpha=1,lambda=hyper_logi_vert)
+logi_model_vert = train(
+          form = label~.,
+          data = vert_train_set_temp,
+          method = "glmnet",
+          family = "binomial",
+          preProcess = c("center","scale"),
+          tuneLength = 1,
+          tuneGrid = tune_vert,
+          trControl = trainControl(method="none")
+        )
+
+# decision tree
+# block
+tune_block = data.frame(cp=hyper_dt_block)
+dt_model_block = train(
+          label ~ .,
+          data = block_train_set_temp,
+          method = "rpart",
+          tuneLength = 1,
+          tuneGrid = tune_block,
+          trControl = trainControl(method="none")
+        )
+# vert
+tune_vert = data.frame(cp=hyper_dt_vert)
+dt_model_vert = train(
+          label ~ .,
+          data = vert_train_set_temp,
+          method = "rpart",
+          tuneLength = 1,
+          tuneGrid = tune_vert,
+          trControl = trainControl(method="none")
+        )
+
+## random forest
+# block
+tune_block = data.frame(mtry=hyper_rf_block)
+rf_model_block = train(
+          label ~ .,
+          data = block_train_set_temp,
+          method = "rf",
+          tuneLength = 1,
+          tuneGrid = tune_block,
+          trControl = trainControl(method="none")
+        )
+# vert
+tune_vert = data.frame(mtry=hyper_rf_vert)
+rf_model_vert = train(
+          label ~ .,
+          data = vert_train_set_temp,
+          method = "rf",
+          tuneLength = 1,
+          tuneGrid = tune_vert,
+          trControl = trainControl(method="none")
+        )
+```
+
+## 3.b ROC
+```{r}
+ROC = function(train_data, model, color){
+  # Predicted probabilities
+  probs = predict(model, train_data, type = "prob")
+  
+  # create the ROC object
+  pROC = roc(train_data$label ~ probs[,2], smoothed = TRUE, plot=FALSE)
+  
+  # Find the best threshold and its x and y in the graph
+  coord = coords(pROC, input="threshold",
+                 ret=c("specificity", "sensitivity"), 
+                 best.method="closest.topleft")
+  
+  best = coords(pROC, x="best", input="threshold",
+                 ret=c("threshold","specificity", "sensitivity"), 
+                 best.method="closest.topleft")
+  
+  x = best['specificity']
+  y = best['sensitivity']
+  thresh = best['threshold']
+  # Add the point and text for the best cutoff on the plot
+  
+  # Calculate AUC
+  auc = round(auc(pROC)[1], 3)
+  
+  return(list("thresh" = thresh, "best" = best, "coord" = coord))
+}
+```
+
+```{r}
+# all the roc results
+threshold_qda_block = ROC(block_train_set, qda_model_block,"paleturquoise3")
+threshold_qda_vert = ROC(vert_train_set, qda_model_vert,"paleturquoise3")
+threshold_lda_block = ROC(block_train_set, lda_model_block,"paleturquoise3")
+threshold_lda_vert = ROC(vert_train_set, lda_model_vert,"paleturquoise3")
+threshold_lr_block = ROC(block_train_set, logi_model_block,"paleturquoise3")
+threshold_lr_vert = ROC(vert_train_set, logi_model_vert,"paleturquoise3")
+threshold_dt_block = ROC(block_train_set, dt_model_block,"paleturquoise3")
+threshold_dt_vert = ROC(vert_train_set, dt_model_vert,"paleturquoise3")
+threshold_rf_block = ROC(block_train_set, rf_model_block,"paleturquoise3")
+threshold_rf_vert = ROC(vert_train_set, rf_model_vert,"paleturquoise3")
+
+# obtain cutoff points
+##block-wise 
+cutoff_qda_block = data.frame(x= 1- threshold_qda_block$best$specificity, y = threshold_qda_block$best$sensitivity, Method = "QDA")
+cutoff_lda_block = data.frame(x= 1- threshold_lda_block$best$specificity, y = threshold_lda_block$best$sensitivity, Method = "LDA")
+cutoff_lr_block = data.frame(x= 1- threshold_lr_block$best$specificity, y = threshold_lr_block$best$sensitivity, Method = "LR")
+cutoff_dt_block = data.frame(x= 1- threshold_dt_block$best$specificity, y = threshold_dt_block$best$sensitivity, Method = "DT")
+cutoff_rf_block = data.frame(x= 1- threshold_rf_block$best$specificity, y = threshold_rf_block$best$sensitivity, Method = "RF")
+cutoff_block = rbind(cutoff_qda_block,cutoff_lda_block,cutoff_lr_block, cutoff_dt_block,cutoff_rf_block)
+##vertical-wise
+cutoff_qda_vert = data.frame(x= 1- threshold_qda_vert$best$specificity, y = threshold_qda_vert$best$sensitivity, Method = "QDA")
+cutoff_lda_vert = data.frame(x= 1- threshold_lda_vert$best$specificity, y = threshold_lda_vert$best$sensitivity, Method = "LDA")
+cutoff_lr_vert = data.frame(x= 1- threshold_lr_vert$best$specificity, y = threshold_lr_vert$best$sensitivity, Method = "LR")
+cutoff_dt_vert = data.frame(x= 1- threshold_dt_vert$best$specificity, y = threshold_dt_vert$best$sensitivity, Method = "DT")
+cutoff_rf_vert = data.frame(x= 1- threshold_rf_vert$best$specificity, y = threshold_rf_vert$best$sensitivity, Method = "RF")
+cutoff_vert = rbind(cutoff_qda_vert,cutoff_lda_vert,cutoff_lr_vert, cutoff_dt_vert,cutoff_rf_vert)
+```
+
+```{r}
+# assemble block split roc lines
+roc_coord_block = rbind(threshold_qda_block$coord, threshold_lda_block$coord, 
+                        threshold_lr_block$coord, threshold_dt_block$coord, threshold_rf_block$coord)
+
+roc_coord_block$Method = c(rep("QDA", nrow(threshold_qda_block$coord)), 
+                           rep("LDA", nrow(threshold_lda_block$coord)),
+                               rep("LR", nrow(threshold_lr_block$coord)),
+                                   rep("DT", nrow(threshold_dt_block$coord)),
+                                       rep("RF", nrow(threshold_rf_block$coord)))
+# plot all roc curves of block-wise split
+plot_block = ggplot() + 
+  geom_line(data = roc_coord_block,aes(x=1-specificity, y=sensitivity, color=Method),show.legend = FALSE) +
+  geom_point(data = cutoff_block,aes(x=x,y=y),size = 0.8)+
+  labs(x="False Positive Rate", y="True Positive Rate") + 
+  ggtitle("Block Split")+
+  coord_fixed()
+
+# get the legend for later plot assemble
+p_legend = ggplot(roc_coord_block, aes(x=1-specificity, y=sensitivity, color=Method)) + 
+  geom_line(show.legend = TRUE) + 
+  labs(x="False Positive Rate", y="True Positive Rate") + 
+  theme(legend.position = "right")
+legend = get_legend(p_legend)
+
+# assemble vertical split roc lines
+roc_coord_vert = rbind(threshold_qda_vert$coord, threshold_lda_vert$coord, 
+                        threshold_lr_vert$coord, threshold_dt_vert$coord, threshold_rf_vert$coord)
+
+roc_coord_vert$Method = c(rep("QDA", nrow(threshold_qda_vert$coord)), 
+                           rep("LDA", nrow(threshold_lda_vert$coord)),
+                               rep("LR", nrow(threshold_lr_vert$coord)),
+                                   rep("DT", nrow(threshold_dt_vert$coord)),
+                                       rep("RF", nrow(threshold_rf_vert$coord)))
+# plot all roc curves of vert-wise split
+plot_vert = ggplot() +   
+  geom_line(data = roc_coord_vert, aes(x=1-specificity, y=sensitivity, color=Method),show.legend = FALSE) +   geom_point(data = cutoff_vert,aes(x=x,y=y),size = 0.8)+
+  labs(x="False Positive Rate", y="True Positive Rate") + 
+  ggtitle("Vertical Split")+
+  coord_fixed()
+
+
+# combine roc curves
+grid.arrange(arrangeGrob(plot_block, plot_vert, ncol=2), legend, ncol=2, widths = c(70,8))
+```
+
+Obtain the cutoff values in a table
+```{r}
+thresholds = data.frame(
+  DT = as.numeric(c(threshold_dt_block$thresh,threshold_dt_vert$thresh)),
+  LDA = as.numeric(c(threshold_lda_block$thresh,threshold_lda_vert$thresh)),
+  LR = as.numeric(c(threshold_lr_block$thresh,threshold_lr_vert$thresh)),
+  QDA = as.numeric(c(threshold_qda_block$thresh,threshold_qda_vert$thresh)),
+  RF = as.numeric(c(threshold_rf_block$thresh,threshold_rf_vert$thresh))
+) %>% round(4)
+rownames(thresholds) = c("Block","Vert")
+print(thresholds)
+```
+
+## 3.c other metrics
+Function for computing test metrics
+```{r}
+test_metric = function(model,testdata, threshold) {
+  thres = threshold[1]
+  auc = threshold[2]
+  y_pred_prob = predict(model, newdata = testdata, type="prob")
+  y_pred <- as.character( ifelse(y_pred_prob[, "Cloud"] > thres, "Cloud", "Not Cloud") )
+  accuracy_test = accuracy(c(testdata[,"label"]), c(y_pred))
+  precsion_test = posPredValue(as.factor(y_pred), as.factor(testdata[,"label"]), positive="Cloud")
+  recall_test = sensitivity(as.factor(y_pred), as.factor(testdata[,"label"]), positive="Cloud")
+  F1 = (2 * precsion_test * recall_test) / (precsion_test + recall_test)
+  
+  return (data.frame("Accuracy" = accuracy_test,
+                     "Precision" = precsion_test, 
+                     "Recall" = recall_test, 
+                     "F1" = F1, 
+                     "auc" = auc))
+}
+```
+
+
+```{r}
+# other metrics table
+rbind(
+test_metric(qda_model_block, block_test_set, threshold = (threshold_qda_block)),
+test_metric(qda_model_vert, vert_test_set, threshold = (threshold_qda_vert)),
+test_metric(lda_model_block, block_test_set, threshold = (threshold_lda_block)),
+test_metric(lda_model_vert, vert_test_set, threshold = (threshold_lda_vert)),
+test_metric(logi_model_block, block_test_set, threshold = (threshold_lr_block)),
+test_metric(logi_model_vert, vert_test_set, threshold = (threshold_lr_vert)),
+test_metric(dt_model_block, block_test_set, threshold = (threshold_dt_block)),
+test_metric(dt_model_vert, vert_test_set, threshold = (threshold_dt_vert)),
+test_metric(rf_model_block, block_test_set, threshold = (threshold_rf_block)),
+test_metric(rf_model_vert, vert_test_set, threshold = (threshold_rf_vert))
+)
+```
+
+
+# 4. Diagnostics
+
+Final Training with best model for block split and vert split
+```{r}
+dele = c("imgIndicator", "prediction_indicator", "block_prediction_indicator", "vert_prediction_indicator")
+blockFinal = train(
+          form = as.factor(label) ~.,
+          data = block_train_set[, !(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+vertFinal = train(
+          form = as.factor(label)~.,
+          data = vert_train_set[,!(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+block_threshold = 0.5
+vert_threshold = 0.49
+
+train_block_predict_prob = predict(blockFinal, 
+                                   newdata = block_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_block_predict= as.character(ifelse(train_block_predict_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+train_vert_predict_prob = predict(vertFinal, newdata = vert_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_vert_predict= as.character(ifelse(train_vert_predict_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+```
+
+Final Testing with best model with different threshold
+```{r}
+pred_block_prob = predict(blockFinal, newdata=block_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_block <- as.character(ifelse(pred_block_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+pred_vert_prob = predict(vertFinal, newdata=vert_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_vert <- as.character(ifelse(pred_vert_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+accuracy(y_pred_block, block_test_set[,"label"])
+accuracy(y_pred_vert, vert_test_set[,"label"])
+```
+
+Combine prediction result with test result, match the data back to its original dataset, impute the labels for later plotting use.
+```{r}
+prediction_block = c(train_block_predict, y_pred_block)
+prediction_vert = c(train_vert_predict, y_pred_vert)
+all_block = rbind(block_train_set, block_test_set)
+all_vert = rbind(vert_train_set, vert_test_set)
+
+block_error_index = all_block$imgIndicator[which(all_block$label != prediction_block)]
+vert_error_index = all_vert$imgIndicator[which(all_vert$label != prediction_vert)]
+
+img1$block_prediction_indicator = "Correct"
+img1[which(img1$imgIndicator %in% block_error_index), "block_prediction_indicator"] = "Incorrect"
+img1[which(img1$label =="Unlabeled"), "block_prediction_indicator"] = "Unlabeled"
+
+img1$vert_prediction_indicator = "Correct"
+img1[which(img1$imgIndicator %in% vert_error_index), "vert_prediction_indicator"] = "Incorrect"
+img1[which(img1$label =="Unlabeled"), "vert_prediction_indicator"] = "Unlabeled"
+
+img2$block_prediction_indicator = "Correct"
+img2[which(img2$imgIndicator %in% block_error_index), "block_prediction_indicator"] = "Incorrect"
+img2[which(img2$label =="Unlabeled"), "block_prediction_indicator"] = "Unlabeled"
+
+img2$vert_prediction_indicator = "Correct"
+img2[which(img2$imgIndicator %in% vert_error_index), "vert_prediction_indicator"] = "Incorrect"
+img2[which(img2$label =="Unlabeled"), "vert_prediction_indicator"] = "Unlabeled"
+
+img3$block_prediction_indicator = "Correct"
+img3[which(img3$imgIndicator %in% block_error_index), "block_prediction_indicator"] = "Incorrect"
+img3[which(img3$label =="Unlabeled"), "block_prediction_indicator"] = "Unlabeled"
+
+img3$vert_prediction_indicator = "Correct"
+img3[which(img3$imgIndicator %in% vert_error_index), "vert_prediction_indicator"] = "Incorrect"
+img3[which(img3$label =="Unlabeled"), "vert_prediction_indicator"] = "Unlabeled"
+```
+
+boxplot of the miss-classified and correctly classified's data's feature
+```{r}
+combined_data = rbind(img1, img2, img3)
+combined_data_temp = combined_data
+combined_data_temp[which(combined_data_temp$label == "Cloud" & 
+                           combined_data_temp$block_prediction_indicator == "Correct"), "block_prediction_indicator"] = "TP"
+combined_data_temp[which(combined_data_temp$label == "Not Cloud" & 
+                           combined_data_temp$block_prediction_indicator == "Correct"), "block_prediction_indicator"] = "TN"
+combined_data_temp[which(combined_data_temp$label == "Cloud" & 
+                           combined_data_temp$block_prediction_indicator == "Incorrect"), "block_prediction_indicator"] = "FN"
+combined_data_temp[which(combined_data_temp$label == "Not Cloud" & 
+                           combined_data_temp$block_prediction_indicator == "Incorrect"), "block_prediction_indicator"] = "FP"
+
+combined_data_temp[which(combined_data_temp$label == "Cloud" & 
+                           combined_data_temp$vert_prediction_indicator == "Correct"), "vert_prediction_indicator"] = "TP"
+combined_data_temp[which(combined_data_temp$label == "Not Cloud" & 
+                           combined_data_temp$vert_prediction_indicator == "Correct"), "vert_prediction_indicator"] = "TN"
+combined_data_temp[which(combined_data_temp$label == "Cloud" & 
+                           combined_data_temp$vert_prediction_indicator == "Incorrect"), "vert_prediction_indicator"] = "FN"
+combined_data_temp[which(combined_data_temp$label == "Not Cloud" & 
+                           combined_data_temp$vert_prediction_indicator == "Incorrect"), "vert_prediction_indicator"] = "FP"
+
+combined_labeled = combined_data[which(combined_data$label != "Unlabeled"),]
+
+par(mfrow=c(2,4))
+boxplot(NDAI~block_prediction_indicator, data=combined_data_temp, xlab = '', ylab = 'NDAI', las=3)
+boxplot(log(SD+1)~block_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'Log(SD + 1)', las=3)
+boxplot(CORR~block_prediction_indicator,data=combined_data_temp, xlab = '', ylab = 'CORR', las=3)
+boxplot(DF~block_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'DF', las=3)
+boxplot(CF~block_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'CF', las=3)
+boxplot(BF~block_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'BF', las=3)
+boxplot(AF~block_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'AF', las=3)
+boxplot(AN~block_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'AN', las=3)
+
+par(mfrow=c(2,4))
+boxplot(NDAI~vert_prediction_indicator, data=combined_data_temp, xlab = '', ylab = 'NDAI', las=3)
+boxplot(log(SD+1)~vert_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'Log(SD + 1)', las=3)
+boxplot(CORR~vert_prediction_indicator,data=combined_data_temp, xlab = '', ylab = 'CORR', las=3)
+boxplot(DF~vert_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'DF', las=3)
+boxplot(CF~vert_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'CF', las=3)
+boxplot(BF~vert_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'BF', las=3)
+boxplot(AF~vert_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'AF', las=3)
+boxplot(AN~vert_prediction_indicator, data=combined_data_temp,xlab = '', ylab = 'AN', las=3)
+```
+
+plot missclassified on block
+```{r}
+img1_temp = img1
+img1_temp[which(img1$block_prediction_indicator == "Incorrect"),"label"] = "Missclassified"
+
+img2_temp = img2
+img2_temp[which(img2$block_prediction_indicator == "Incorrect"),"label"] = "Missclassified"
+
+img3_temp = img3
+img3_temp[which(img3$block_prediction_indicator == "Incorrect"),"label"] = "Missclassified"
+
+
+p1 = ggplot(data=img1_temp, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = FALSE) + 
+  ggtitle("Image 1 Data") +
+  xlab("") + ylab("Y Coordinate") +
+  scale_fill_manual(values = c("deepskyblue", "red", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(panel.background = element_blank(),plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p2 = ggplot(data=img2_temp, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = FALSE) + 
+  ggtitle("Image 2 Data") +
+  xlab("X Coordinate") + ylab("") +
+  scale_fill_manual(values = c("deepskyblue", "red", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(panel.background = element_blank(),plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p3 = ggplot(data=img3_temp, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = FALSE) + 
+  ggtitle("Image 3 Data") +
+  xlab("") + ylab("") +
+  scale_fill_manual(values = c("deepskyblue", "red", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(panel.background = element_blank(),plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p_legend = ggplot(data=img3_temp, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = TRUE) + 
+  ggtitle("Image 1 Data") +
+  xlab("") + ylab("") +
+  scale_fill_manual(values = c("deepskyblue", "red", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(legend.position = 'right',plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+legend = get_legend(p_legend)
+
+p_grid = grid.arrange(arrangeGrob(p1,p2, p3, ncol=3),legend,
+              ncol=2,
+              widths=c(20, 4))
+```
+
+plot miss-classified on vert
+```{r}
+img1_temp = img1
+img1_temp[which(img1$vert_prediction_indicator == "Incorrect"),"label"] = "Missclassified"
+
+img2_temp = img2
+img2_temp[which(img2$vert_prediction_indicator == "Incorrect"),"label"] = "Missclassified"
+
+img3_temp = img3
+img3_temp[which(img3$vert_prediction_indicator == "Incorrect"),"label"] = "Missclassified"
+
+
+p1 = ggplot(data=img1_temp, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = FALSE) + 
+  ggtitle("Image 1 Data") +
+  xlab("") + ylab("Y Coordinate") +
+  scale_fill_manual(values = c("deepskyblue", "red", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(panel.background = element_blank(), plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p2 = ggplot(data=img2_temp, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = FALSE) + 
+  ggtitle("Image 2 Data") +
+  xlab("X Coordinate") + ylab("")+
+  scale_fill_manual(values = c("deepskyblue", "red", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(panel.background = element_blank(),plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p3 = ggplot(data=img3_temp, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = FALSE) + 
+  ggtitle("Image 3 Data") +
+  xlab("") + ylab("") +
+  scale_fill_manual(values = c("deepskyblue", "red", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(panel.background = element_blank(),plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+p_legend = ggplot(data=img3_temp, aes(x=x,y=y,fill=label))+
+  geom_tile(show.legend = TRUE) + 
+  ggtitle("Image 3 Data") +
+  xlab("X Coordinate") + ylab("Y Coordinate") +
+  scale_fill_manual(values = c("deepskyblue", "red", "dodgerblue1",  "dodgerblue4"), name="Label") + 
+  theme(legend.position = 'right',plot.margin=grid::unit(c(0,0,0,0), "mm")) + coord_fixed()
+
+legend = get_legend(p_legend)
+
+p_grid = grid.arrange(arrangeGrob(p1,p2, p3, ncol=3),legend,
+              ncol=2,
+              widths=c(20, 4))
+```
+
+Different seed, confusion matrix and variable importance
+```{r}
+set.seed(520)
+
+img1$imgIndicator = 1:nrow(img1)
+max(img1$imgIndicator)
+img2$imgIndicator = (nrow(img1) + 1):(nrow(img1)+nrow(img2))
+min(img2$imgIndicator)
+img3$imgIndicator = (nrow(img1)+nrow(img2) + 1):(nrow(img1)+nrow(img2)+nrow(img3))
+
+block_split = block_wise_split(list(img1, img2, img3))
+block_train = block_split$train_blocks
+block_test = block_split$test_blocks
+block_train_set = data.frame(rbindlist(block_train)[,-c("x", "y")])
+block_test_set = data.frame(rbindlist(block_test)[,-c("x", "y")])
+
+vertical_split = vert_wise_split(list(img1, img2, img3))
+vert_train = vertical_split$train_blocks
+vert_test = vertical_split$test_blocks
+vert_train_set = data.frame(rbindlist(vert_train)[,-c("x", "y")])
+vert_test_set = data.frame(rbindlist(vert_test)[,-c("x", "y")])
+
+dele = c("imgIndicator", "prediction_indicator", "block_prediction_indicator", "vert_prediction_indicator")
+blockFinal = train(
+          form = as.factor(label) ~.,
+          data = block_train_set[, !(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+vertFinal = train(
+          form = as.factor(label)~.,
+          data = vert_train_set[,!(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+block_importance = varImp(blockFinal)$importance
+block_importance$Feature = rownames(block_importance)
+block_importance = block_importance[1:4,]
+
+vert_importance = varImp(vertFinal)$importance
+vert_importance$Feature = rownames(vert_importance)
+vert_importance = vert_importance[1:4,]
+
+
+p1 = block_plot = ggplot(block_importance, aes(x= reorder(Feature, -Overall), y=Overall)) + 
+  geom_bar(fill="Skyblue", alpha = 0.7, stat="identity", position = "dodge")+ 
+  xlab("Feature") + ylab("Importance") + ggtitle(paste0("Seed: ",as.character(520)))
+  
+p5 = vert_plot = ggplot(vert_importance, aes(x= reorder(Feature, -Overall), y=Overall)) + 
+  geom_bar(fill="Coral", alpha = 0.7, stat="identity", position = "dodge") + 
+  xlab("Feature") + ylab("Importance")+ ggtitle(paste0("Seed: ",as.character(520)))
+
+block_threshold = 0.5
+vert_threshold = 0.49
+train_block_predict_prob = predict(blockFinal, 
+                                   newdata = block_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_block_predict= as.character(ifelse(train_block_predict_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+train_vert_predict_prob = predict(vertFinal, newdata = vert_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_vert_predict= as.character(ifelse(train_vert_predict_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+pred_block_prob = predict(blockFinal, newdata=block_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_block <- as.character(ifelse(pred_block_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+pred_vert_prob = predict(vertFinal, newdata=vert_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_vert <- as.character(ifelse(pred_vert_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+prediction_block = c(train_block_predict, y_pred_block)
+prediction_vert = c(train_vert_predict, y_pred_vert)
+all_block = rbind(block_train_set, block_test_set)
+all_vert = rbind(vert_train_set, vert_test_set)
+confusionMatrix(as.factor(all_block$label), as.factor(prediction_block))
+confusionMatrix(as.factor(all_vert$label), as.factor(prediction_vert))
+
+set.seed(1)
+
+img1$imgIndicator = 1:nrow(img1)
+max(img1$imgIndicator)
+img2$imgIndicator = (nrow(img1) + 1):(nrow(img1)+nrow(img2))
+min(img2$imgIndicator)
+img3$imgIndicator = (nrow(img1)+nrow(img2) + 1):(nrow(img1)+nrow(img2)+nrow(img3))
+
+block_split = block_wise_split(list(img1, img2, img3))
+block_train = block_split$train_blocks
+block_test = block_split$test_blocks
+block_train_set = data.frame(rbindlist(block_train)[,-c("x", "y")])
+block_test_set = data.frame(rbindlist(block_test)[,-c("x", "y")])
+
+vertical_split = vert_wise_split(list(img1, img2, img3))
+vert_train = vertical_split$train_blocks
+vert_test = vertical_split$test_blocks
+vert_train_set = data.frame(rbindlist(vert_train)[,-c("x", "y")])
+vert_test_set = data.frame(rbindlist(vert_test)[,-c("x", "y")])
+
+dele = c("imgIndicator", "prediction_indicator", "block_prediction_indicator", "vert_prediction_indicator")
+blockFinal = train(
+          form = as.factor(label) ~.,
+          data = block_train_set[, !(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+vertFinal = train(
+          form = as.factor(label)~.,
+          data = vert_train_set[,!(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+block_importance = varImp(blockFinal)$importance
+block_importance$Feature = rownames(block_importance)
+block_importance = block_importance[1:4,]
+
+vert_importance = varImp(vertFinal)$importance
+vert_importance$Feature = rownames(vert_importance)
+vert_importance = vert_importance[1:4,]
+
+
+p2 = block_plot = ggplot(block_importance, aes(x= reorder(Feature, -Overall), y=Overall)) + 
+  geom_bar(fill="Skyblue", alpha = 0.7, stat="identity", position = "dodge")+ 
+  xlab("Feature") + ylab("Importance") + ggtitle(paste0("Seed: ",as.character(1)))
+
+p6 = vert_plot = ggplot(vert_importance, aes(x= reorder(Feature, -Overall), y=Overall)) + 
+  geom_bar(fill="Coral", alpha = 0.7, stat="identity", position = "dodge") + 
+  xlab("Feature") + ylab("Importance")+ ggtitle(paste0("Seed: ",as.character(1)))
+
+
+block_threshold = 0.5
+vert_threshold = 0.49
+train_block_predict_prob = predict(blockFinal, 
+                                   newdata = block_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_block_predict= as.character(ifelse(train_block_predict_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+train_vert_predict_prob = predict(vertFinal, newdata = vert_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_vert_predict= as.character(ifelse(train_vert_predict_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+pred_block_prob = predict(blockFinal, newdata=block_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_block <- as.character(ifelse(pred_block_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+pred_vert_prob = predict(vertFinal, newdata=vert_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_vert <- as.character(ifelse(pred_vert_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+prediction_block = c(train_block_predict, y_pred_block)
+prediction_vert = c(train_vert_predict, y_pred_vert)
+all_block = rbind(block_train_set, block_test_set)
+all_vert = rbind(vert_train_set, vert_test_set)
+confusionMatrix(as.factor(all_block$label), as.factor(prediction_block))
+confusionMatrix(as.factor(all_vert$label), as.factor(prediction_vert))
+
+
+set.seed(130)
+
+img1$imgIndicator = 1:nrow(img1)
+max(img1$imgIndicator)
+img2$imgIndicator = (nrow(img1) + 1):(nrow(img1)+nrow(img2))
+min(img2$imgIndicator)
+img3$imgIndicator = (nrow(img1)+nrow(img2) + 1):(nrow(img1)+nrow(img2)+nrow(img3))
+
+block_split = block_wise_split(list(img1, img2, img3))
+block_train = block_split$train_blocks
+block_test = block_split$test_blocks
+block_train_set = data.frame(rbindlist(block_train)[,-c("x", "y")])
+block_test_set = data.frame(rbindlist(block_test)[,-c("x", "y")])
+
+vertical_split = vert_wise_split(list(img1, img2, img3))
+vert_train = vertical_split$train_blocks
+vert_test = vertical_split$test_blocks
+vert_train_set = data.frame(rbindlist(vert_train)[,-c("x", "y")])
+vert_test_set = data.frame(rbindlist(vert_test)[,-c("x", "y")])
+
+dele = c("imgIndicator", "prediction_indicator", "block_prediction_indicator", "vert_prediction_indicator")
+blockFinal = train(
+          form = as.factor(label) ~.,
+          data = block_train_set[, !(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+vertFinal = train(
+          form = as.factor(label)~.,
+          data = vert_train_set[,!(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+block_importance = varImp(blockFinal)$importance
+block_importance$Feature = rownames(block_importance)
+block_importance = block_importance[1:4,]
+
+vert_importance = varImp(vertFinal)$importance
+vert_importance$Feature = rownames(vert_importance)
+vert_importance = vert_importance[1:4,]
+
+p3 = block_plot = ggplot(block_importance, aes(x= reorder(Feature, -Overall), y=Overall)) + 
+  geom_bar(fill="Skyblue", alpha = 0.7, stat="identity", position = "dodge")+ 
+  xlab("Feature") + ylab("Importance") + ggtitle(paste0("Seed: ",as.character(130)))
+  
+
+p7 = vert_plot = ggplot(vert_importance, aes(x= reorder(Feature, -Overall), y=Overall)) + 
+  geom_bar(fill="Coral", alpha = 0.7, stat="identity", position = "dodge") + 
+  xlab("Feature") + ylab("Importance")+ ggtitle(paste0("Seed: ",as.character(130)))
+
+block_threshold = 0.5
+vert_threshold = 0.49
+train_block_predict_prob = predict(blockFinal, 
+                                   newdata = block_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_block_predict= as.character(ifelse(train_block_predict_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+train_vert_predict_prob = predict(vertFinal, newdata = vert_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_vert_predict= as.character(ifelse(train_vert_predict_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+pred_block_prob = predict(blockFinal, newdata=block_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_block <- as.character(ifelse(pred_block_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+pred_vert_prob = predict(vertFinal, newdata=vert_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_vert <- as.character(ifelse(pred_vert_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+prediction_block = c(train_block_predict, y_pred_block)
+prediction_vert = c(train_vert_predict, y_pred_vert)
+all_block = rbind(block_train_set, block_test_set)
+all_vert = rbind(vert_train_set, vert_test_set)
+confusionMatrix(as.factor(all_block$label), as.factor(prediction_block))
+confusionMatrix(as.factor(all_vert$label), as.factor(prediction_vert))
+
+
+set.seed(602)
+
+img1$imgIndicator = 1:nrow(img1)
+max(img1$imgIndicator)
+img2$imgIndicator = (nrow(img1) + 1):(nrow(img1)+nrow(img2))
+min(img2$imgIndicator)
+img3$imgIndicator = (nrow(img1)+nrow(img2) + 1):(nrow(img1)+nrow(img2)+nrow(img3))
+
+block_split = block_wise_split(list(img1, img2, img3))
+block_train = block_split$train_blocks
+block_test = block_split$test_blocks
+block_train_set = data.frame(rbindlist(block_train)[,-c("x", "y")])
+block_test_set = data.frame(rbindlist(block_test)[,-c("x", "y")])
+
+vertical_split = vert_wise_split(list(img1, img2, img3))
+vert_train = vertical_split$train_blocks
+vert_test = vertical_split$test_blocks
+vert_train_set = data.frame(rbindlist(vert_train)[,-c("x", "y")])
+vert_test_set = data.frame(rbindlist(vert_test)[,-c("x", "y")])
+
+dele = c("imgIndicator", "prediction_indicator", "block_prediction_indicator", "vert_prediction_indicator")
+blockFinal = train(
+          form = as.factor(label) ~.,
+          data = block_train_set[, !(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+vertFinal = train(
+          form = as.factor(label)~.,
+          data = vert_train_set[,!(names(block_train_set) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+block_importance = varImp(blockFinal)$importance
+block_importance$Feature = rownames(block_importance)
+block_importance = block_importance[1:4,]
+
+vert_importance = varImp(vertFinal)$importance
+vert_importance$Feature = rownames(vert_importance)
+vert_importance = vert_importance[1:4,]
+
+p4 = block_plot = ggplot(block_importance, aes(x= reorder(Feature, -Overall), y=Overall)) + 
+  geom_bar(fill="Skyblue", alpha = 0.7, stat="identity", position = "dodge")+ 
+  xlab("Feature") + ylab("Importance") + ggtitle(paste0("Seed: ",as.character(602)))
+  
+
+p8 = vert_plot = ggplot(vert_importance, aes(x= reorder(Feature, -Overall), y=Overall)) + 
+  geom_bar(fill="Coral", alpha = 0.7, stat="identity", position = "dodge") + 
+  xlab("Feature") + ylab("Importance")+ ggtitle(paste0("Seed: ",as.character(602)))
+
+block_threshold = 0.5
+vert_threshold = 0.49
+train_block_predict_prob = predict(blockFinal, 
+                                   newdata = block_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_block_predict= as.character(ifelse(train_block_predict_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+train_vert_predict_prob = predict(vertFinal, newdata = vert_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_vert_predict= as.character(ifelse(train_vert_predict_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+pred_block_prob = predict(blockFinal, newdata=block_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_block <- as.character(ifelse(pred_block_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+pred_vert_prob = predict(vertFinal, newdata=vert_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_vert <- as.character(ifelse(pred_vert_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+prediction_block = c(train_block_predict, y_pred_block)
+prediction_vert = c(train_vert_predict, y_pred_vert)
+all_block = rbind(block_train_set, block_test_set)
+all_vert = rbind(vert_train_set, vert_test_set)
+confusionMatrix(as.factor(all_block$label), as.factor(prediction_block))
+confusionMatrix(as.factor(all_vert$label), as.factor(prediction_vert))
+
+grid.arrange(arrangeGrob(p1,p2,p3,p4, nrow=1), arrangeGrob(p5,p6,p7,p8, nrow=1), nrow=2)
+```
+
+
+```{r}
+block_threshold = 0.5
+vert_threshold = 0.49
+train_block_predict_prob = predict(blockFinal, 
+                                   newdata = block_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_block_predict= as.character(ifelse(train_block_predict_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+train_vert_predict_prob = predict(vertFinal, newdata = vert_train_set[,!(names(block_train_set) %in% dele)],type="prob")
+train_vert_predict= as.character(ifelse(train_vert_predict_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+pred_block_prob = predict(blockFinal, newdata=block_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_block <- as.character(ifelse(pred_block_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+pred_vert_prob = predict(vertFinal, newdata=vert_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_vert <- as.character(ifelse(pred_vert_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+prediction_block = c(train_block_predict, y_pred_block)
+prediction_vert = c(train_vert_predict, y_pred_vert)
+all_block = rbind(block_train_set, block_test_set)
+all_vert = rbind(vert_train_set, vert_test_set)
+confusionMatrix(as.factor(all_block$label), as.factor(prediction_block))
+confusionMatrix(as.factor(all_vert$label), as.factor(prediction_vert))
+```
+
+Perturbing the dataset and train on rf and logistic regression
+```{r}
+set.seed(520)
+
+img1$imgIndicator = 1:nrow(img1)
+max(img1$imgIndicator)
+img2$imgIndicator = (nrow(img1) + 1):(nrow(img1)+nrow(img2))
+min(img2$imgIndicator)
+img3$imgIndicator = (nrow(img1)+nrow(img2) + 1):(nrow(img1)+nrow(img2)+nrow(img3))
+
+block_split = block_wise_split(list(img1, img2, img3))
+block_train = block_split$train_blocks
+block_test = block_split$test_blocks
+block_train_set = data.frame(rbindlist(block_train)[,-c("x", "y")])
+block_test_set = data.frame(rbindlist(block_test)[,-c("x", "y")])
+
+vertical_split = vert_wise_split(list(img1, img2, img3))
+vert_train = vertical_split$train_blocks
+vert_test = vertical_split$test_blocks
+vert_train_set = data.frame(rbindlist(vert_train)[,-c("x", "y")])
+vert_test_set = data.frame(rbindlist(vert_test)[,-c("x", "y")])
+
+dele = c("imgIndicator", "prediction_indicator", "block_prediction_indicator", "vert_prediction_indicator")
+
+p = sort(seq(0, 0.5, 0.05), decreasing = T)
+p
+p_acc_block = c()
+p_acc_vert = c()
+for (i in 1:length(p)) {
+  p_i = p[i]
+  print(p_i)
+  size_perturb = as.integer(nrow(block_train_set)*p_i)
+  perturb_index_block = sample(1:nrow(block_train_set), size_perturb)
+perturbed_block = block_train_set
+perturbed_block[perturb_index_block, "label"] = 
+  ifelse(block_train_set[perturb_index_block,"label"] == "Cloud", "Not Cloud", "Cloud")
+
+size_perturb = as.integer(nrow(vert_train_set)*p_i)
+perturb_index_vert = sample(1:nrow(vert_train_set), size_perturb)
+perturbed_vert = vert_train_set
+perturbed_vert[perturb_index_vert, "label"] = 
+  ifelse(vert_train_set[perturb_index_vert,"label"] == "Cloud", "Not Cloud", "Cloud")
+
+blockFinal = train(
+          form = as.factor(label) ~.,
+          data = perturbed_block[, !(names(perturbed_block) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+        )
+
+vertFinal = train(
+          form = as.factor(label)~.,
+          data = perturbed_vert[,!(names(perturbed_vert) %in% dele)],
+          method = "rf",
+          tuneGrid=data.frame(mtry=1),
+          tuneLength = 1,
+          trControl = trainControl(method="none")
+)
+
+pred_block_prob = predict(blockFinal, newdata=block_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_block <- as.character(ifelse(pred_block_prob[,"Cloud"] > block_threshold, "Cloud", "Not Cloud"))
+pred_vert_prob = predict(vertFinal, newdata=vert_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_vert <- as.character(ifelse(pred_vert_prob[,"Cloud"] > vert_threshold, "Cloud", "Not Cloud"))
+a_block = accuracy(y_pred_block, block_test_set[,"label"])
+a_vert = accuracy(y_pred_vert, vert_test_set[,"label"])
+print(a_block)
+print(a_vert)
+p_acc_block = c(p_acc_block, a_block)
+p_acc_vert = c(p_acc_vert, a_vert)
+}
+```
+
+Plot of the accuracy v.s. magnitude of parameter mtry (under seed 520, which is our main model in part 4)
+```{r}
+#random forest 
+## block
+rfblock.df = acc_rf_block %>% round(4)
+colnames(rfblock.df) = c(1:8)
+rownames(rfblock.df) = c("f1","f2","f3","f4","f5")
+rfblock.df = as.data.frame(t(rfblock.df))
+
+mtry_sd_block = apply(rfblock.df,1,sd)
+
+block_df = data.frame(rowMeans(rfblock.df))
+colnames(block_df) = c("Mean_accuracy")
+rownames(block_df) = c(as.character(1:8))
+block_df = block_df %>% mutate(
+  mtry = c(1:8),
+  Mean_error = 1-Mean_accuracy,
+  sd = mtry_sd_block,
+  split = "block"
+  )
+
+#vert 
+rfvert.df = acc_rf_vert %>% round(4)
+colnames(rfvert.df) = c(1:8)
+rownames(rfvert.df) = c("f1","f2","f3","f4","f5")
+rfvert.df = as.data.frame(t(rfvert.df))
+
+mtry_sd_vert = apply(rfvert.df,1,sd)
+
+vert_df = data.frame(rowMeans(rfvert.df))
+colnames(vert_df) = c("Mean_accuracy")
+rownames(vert_df) = c(as.character(1:8))
+vert_df = vert_df %>% mutate(
+  mtry = c(1:8),
+  Mean_error = 1-Mean_accuracy,
+  sd = mtry_sd_vert,
+  split = "vert"
+  )
+
+df = rbind(block_df,vert_df)
+
+ggplot(df, aes(x=mtry, y=Mean_error, color=split))+
+  geom_line()+
+  geom_point()+
+  labs(x = "mtry",y = "CV mean error")
+  scale_color_manual(name = "split",values = c("block" = "skyblue", "vert" = "coral"))
+```
+
+```{r}
+set.seed(520)
+
+img1$imgIndicator = 1:nrow(img1)
+max(img1$imgIndicator)
+img2$imgIndicator = (nrow(img1) + 1):(nrow(img1)+nrow(img2))
+min(img2$imgIndicator)
+img3$imgIndicator = (nrow(img1)+nrow(img2) + 1):(nrow(img1)+nrow(img2)+nrow(img3))
+
+block_split = block_wise_split(list(img1, img2, img3))
+block_train = block_split$train_blocks
+block_test = block_split$test_blocks
+block_train_set = data.frame(rbindlist(block_train)[,-c("x", "y")])
+block_test_set = data.frame(rbindlist(block_test)[,-c("x", "y")])
+
+vertical_split = vert_wise_split(list(img1, img2, img3))
+vert_train = vertical_split$train_blocks
+vert_test = vertical_split$test_blocks
+vert_train_set = data.frame(rbindlist(vert_train)[,-c("x", "y")])
+vert_test_set = data.frame(rbindlist(vert_test)[,-c("x", "y")])
+
+dele = c("imgIndicator", "prediction_indicator", "block_prediction_indicator", "vert_prediction_indicator")
+
+p = sort(seq(0, 0.5, 0.05), decreasing = T)
+p
+p_acc_block_logi = c()
+p_acc_vert_logi = c()
+for (i in 1:length(p)) {
+  p_i = p[i]
+  print(p_i)
+  size_perturb = as.integer(nrow(block_train_set)*p_i)
+  perturb_index_block = sample(1:nrow(block_train_set), size_perturb)
+perturbed_block = block_train_set
+perturbed_block[perturb_index_block, "label"] = 
+  ifelse(block_train_set[perturb_index_block,"label"] == "Cloud", "Not Cloud", "Cloud")
+
+size_perturb = as.integer(nrow(vert_train_set)*p_i)
+perturb_index_vert = sample(1:nrow(vert_train_set), size_perturb)
+perturbed_vert = vert_train_set
+perturbed_vert[perturb_index_vert, "label"] = 
+  ifelse(vert_train_set[perturb_index_vert,"label"] == "Cloud", "Not Cloud", "Cloud")
+
+# block
+tune_block = data.frame(alpha=1,lambda=0.007)
+blockFinal = train(
+          form = label ~ .,
+          data = perturbed_block[, !(names(perturbed_block) %in% dele)],
+          method = "glmnet",
+          family = "binomial",
+          preProcess = c("center","scale"),
+          tuneLength = 1,
+          tuneGrid = tune_block,
+    trControl = trainControl(method="none")
+)
+# vert
+tune_vert = data.frame(alpha=1,lambda=0.0005)
+vertFinal = train(
+          form = label~.,
+          data = perturbed_vert[, !(names(perturbed_vert) %in% dele)],
+          method = "glmnet",
+          family = "binomial",
+          preProcess = c("center","scale"),
+          tuneLength = 1,
+          tuneGrid = tune_vert,
+    trControl = trainControl(method="none")
+        )
+
+pred_block_prob = predict(blockFinal, newdata=block_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_block <- as.character(ifelse(pred_block_prob[,"Cloud"] > 0.6049, "Cloud", "Not Cloud"))
+pred_vert_prob = predict(vertFinal, newdata=vert_test_set[,!(names(block_test_set) %in% dele)], type="prob")
+y_pred_vert <- as.character(ifelse(pred_vert_prob[,"Cloud"] > 0.7152, "Cloud", "Not Cloud"))
+a_block = accuracy(y_pred_block, block_test_set[,"label"])
+a_vert = accuracy(y_pred_vert, vert_test_set[,"label"])
+print(a_block)
+print(a_vert)
+p_acc_block_logi = c(p_acc_block_logi, a_block)
+p_acc_vert_logi = c(p_acc_vert_logi, a_vert)
+}
+```
+
+```{r}
+df = data.frame("Perturb" = rep(p,2), "Accuracy_RF" = c(p_acc_block, p_acc_vert),
+                "Accuracy_Logi" = c(p_acc_block_logi, p_acc_vert_logi),
+                "Split" = c(rep("Block", length(p)), rep("Vertical", length(p))),
+                "Model" = c(rep("Random Forest", 2*length(p)), rep("Logistic Regression", 2*length(p))))
+ggplot(df, aes(x=Perturb, color=Split))+
+  geom_point(aes(y=Accuracy_RF)) + 
+  geom_line(aes(y=Accuracy_RF, linetype="Random Forest")) + 
+  geom_point(aes(y=Accuracy_Logi)) + 
+  geom_line(aes(y=Accuracy_Logi, linetype="Logistic Regression")) + 
+  xlab("Perturbed Proportion") + ylab("Test Accuracy") + 
+  scale_linetype_manual(name="Model", 
+                          values=c("Random Forest"=1,"Logistic Regression"=2))
+```
+
+
