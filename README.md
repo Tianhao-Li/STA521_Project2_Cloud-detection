@@ -1,4 +1,4 @@
-# STA 521 Project 2
+# STA521 Project 2: Cloud Detection
 ## Author: Tianhao Li, Haoming Yang
 
 In this project, we implemented the following:
